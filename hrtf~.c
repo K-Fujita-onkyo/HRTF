@@ -3,7 +3,8 @@
 #include "libEigenHRTF/libEigenHRTF.h"
 
 static t_class *hrtf_tilde_class;
-#define MAX_BLOCKSIZE 2048
+
+#define BUF_MAX 1024
 
 int max(int, int);
 
@@ -76,12 +77,12 @@ typedef struct _hrtf_tilde{
 static t_int *hrtf_tilde_perform(t_int *w){
   t_hrtf_tilde *x = (t_hrtf_tilde *)(w[1]);
   t_float *x_in1 = (t_float *)(w[2]);
-  t_float *l_out = (t_float *)(w[3]);
-  t_float *r_out = (t_float *)(w[4]);
+  t_float *L_out = (t_float *)(w[3]);
+  t_float *R_out = (t_float *)(w[4]);
   int n = (int)(w[5]);
 
   int i;
-  int d_delay_L, d_delay_R; //Delay-time difference between L and R (0 ms or more)
+  int length_L, length_R;
 
   /*copy x->s_in from x_in*/
   memset(x->s_in,0.0f,sizeof(x->s_in));
@@ -105,35 +106,40 @@ static t_int *hrtf_tilde_perform(t_int *w){
   fftwf_execute(x->iffftw_l_plan);
   fftwf_execute(x->iffftw_r_plan);
 
+  length_L = x->delays[0]+x->fft_size;
+  length_R = x->delays[1]+x->fft_size;
+
 /*input out signal to buffer*/
-
-  d_delay_L = max(0,x->delays[0]-x->delays[1]);
-  d_delay_R = max(0,x->delays[1]-x->delays[0]);
-
-  for(i=0; i<x->fft_size+d_delay_L; i++){
-    if(i<d_delay_L){
-      x->l_buffer[i]=x->l_buffer[i]+0;
+  for(i=x->delays[0];i<BUF_MAX;i++){
+    if(i - x->delays[0] < n){
+      x->l_buffer[i]=x->l_buffer[i]+x->l_out[i - x->delays[0]]/n;
     }else{
-      x->l_buffer[i]=x->l_buffer[i]+x->l_out[i-d_delay_L]/n;
-    }
-  }
-  for(i=0; i<x->fft_size+d_delay_R; i++){
-    if(i<d_delay_R){
-      x->r_buffer[i]=x->r_buffer[i]+0;
-    }else{
-      x->r_buffer[i]=x->r_buffer[i]+x->r_out[i-d_delay_R]/n;
+      x->l_buffer[i]=x->l_buffer[i];
     }
   }
 
-/*output contents and shift buffer information*/
-  for(i=0;i<x->fft_size;i++){
+  for(i=0;i<BUF_MAX - n;i++){
     if(i<n){
-      r_out[i] = x->r_buffer[i];
-      l_out[i] = x->l_buffer[i];
+      L_out[i] = x->l_buffer[i];
     }
-    x->r_buffer[i] = x->r_buffer[i + n];
     x->l_buffer[i] = x->l_buffer[i + n];
   }
+
+  for(i=x->delays[1];i<BUF_MAX;i++){
+    if(i - x->delays[1] < n){
+      x->r_buffer[i]=x->r_buffer[i]+x->r_out[i - x->delays[1]]/n;
+    }else{
+      x->r_buffer[i]=x->r_buffer[i];
+    }
+  }
+
+  for(i=0;i<BUF_MAX - n;i++){
+    if(i<n){
+      R_out[i] = x->r_buffer[i];
+    }
+    x->r_buffer[i] = x->r_buffer[i + n];
+  }
+
   return (w + 6);
 }
 
@@ -164,10 +170,8 @@ static void hrtf_tilde_dsp(t_hrtf_tilde *x, t_signal **sp){
   x->filter_l = malloc(sizeof(float complex)*(x->eigen->n_bins));
   x->filter_r = malloc(sizeof(float complex)*(x->eigen->n_bins));
 
-  x->buffer_size = MAX_BLOCKSIZE;
-
-  x->l_buffer = malloc(sizeof(t_float)*(x->buffer_size));
-  x->r_buffer = malloc(sizeof(t_float)*(x->buffer_size));
+  x->l_buffer = malloc(sizeof(t_float)*BUF_MAX);
+  x->r_buffer = malloc(sizeof(t_float)*BUF_MAX);
   memset(x->l_buffer,0.0f,sizeof(x->l_buffer));
   memset(x->r_buffer,0.0f,sizeof(x->r_buffer));
 
@@ -188,6 +192,9 @@ static void hrtf_tilde_dsp(t_hrtf_tilde *x, t_signal **sp){
   x->r_out = fftwf_alloc_real(x->fft_size);
   x->iffftw_r_plan = fftwf_plan_dft_c2r_1d(x->fft_size, x->fftw_r_out, x->r_out, FFTW_ESTIMATE);
 
+  /*delay*/
+  //delay_new(&x->l_delay_buffer, sp[0]->s_sr, sp[0]->s_n);
+  //delay_new(&x->r_delay_buffer, sp[0]->s_sr, sp[0]->s_n);
 }
 
 
@@ -258,12 +265,4 @@ void hrtf_tilde_setup(void){
 
   CLASS_MAINSIGNALIN(hrtf_tilde_class, t_hrtf_tilde, x_f);
   class_addmethod(hrtf_tilde_class, (t_method)hrtf_tilde_dsp, gensym("dsp"), 0);
-}
-
-int max(int a, int b){
-  if(a>=b){
-    return a;
-  }else{
-    return b;
-  }
 }
